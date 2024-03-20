@@ -1,23 +1,40 @@
 ## Overview
+
 #### How to run:
 ```
-./uthread-demo 100000000 <threads count> <optional time slice>
+./uthread-sync-demo <threads count A> <threads count B>
 ```
-threads count < 100
-
-### Known issues
-1. Can only create 100 or less threads, no recycle mechanism. Thread number >100 will cause seg fault
-
+A+B < 99
 
 ### Additional Assumptions
-1. One 100 threads could exist in this program.
-2. No yield was called in the calculation
-3. Resume is move the blocked (suspended) thread from blocked queue back to ready queue.
-4. Suspend moves thread to blokced queue.
+1. When calling on signal() and wait(), assume the same lock is used
+2. Async I/O: only one read/write operation is running at one time
 
-### Test cases
-The test cases are stored in the test case folder.
-there is addtional cpp files, copy the content to the main and run as normal to show the test result.
+
+### Priority Inversion Solution
+We implemented the priority boosting solution. In uthread.cpp, we create a function named priority_boost().
+This function will get the threads from low priority and medium priority queue. If the thread holds a lock or locks, 
+a random flag will determine whether this thread will be boosted to nect priority. For the green queue, there will be two consecutive
+random flags to determine whether this thread will be boosted to red priority.
+If the thread has no lock, it will be put back to original queue. This function will be called from yield() before switching the 
+threads, as each time yield() is called, there will be a new round of scheduling. 
+
+
+### Lock vs. Spinlock
+
+### Priority Inversion
+The test case creates 4 threads, one low priority, 2 medium and one high. Assuming the threads is scheduled in sequence. Without priority boosting mechanism, the low priority thread will enter the critical section and grab the lock. As the low priority thread is excuting, the later 3 threads will be added to the ready queue. Since the high priority thread will wait for the lock, 2 medium priority threads will be scheduled and run before high priority thread. 
+
+With priority boosting, it will search through the ready queue, for all the low priority threads that hold one or more locks, it will be randomly boosted to medium or high priority. Therefore the low priority threads in the critical section can be scheduled and allow waiting threads with higher priority to proceed. 
+
+The implementation boosts both low and medium priority threads. The boosting will be called in the yield() function since each time a thread yields there will be a new round of scheduling.
+
+### Asynchronization I/O
+
+1. Asynchronization I/O will provide better performance. Synchronized I/O cause threads to wait for the I/O operation to finish before resuming, which means other threads will yield for I/O. For asynchronized I/O, the I/O operation could run seperately while the OS could schedule and run other threads.
+2. As the amount of I/O work becomes larger, synchronized I/O will suffer more performance penalty beacuse the I/O will interrupt other threads. For asynchrozied I/O, it depends on the threads' works. If some threads are waiting for the read/write operation, the perfromance will likely to be bad. Generally the performance of async I/O depends on the other threads job length and their data dependencies.
+3. As other thread work increases, async I/O will be faster than sync I/O because those threads can run when I/O is operating in the background
+
 
 ### Custom API
 No additional custom APIs used
@@ -33,8 +50,3 @@ for each thread is almost the same length so that round robin scheduling will no
 ### Critical Sections
 The critical sections include the atomic operations for thread control, including join, switch, create, yield, exit, suspend, and resume.
 Those operations involves contxt switch and the thread may lost its state or corrupted if they can be interrupted during those operations.
-
-### Potential Improvements
-One possible solution would be SJF: Shortest Job First. This would prevent other threads waiting for too long, which could achieve the 
-minimum waiting time. One problem of this solution is that the longest thread may have to wait utill all other threads finished. In addition,
-we do not know how to implement an algorithm to calculate the length of a thread excution.

@@ -1,80 +1,194 @@
 #include "uthread.h"
+#include "Lock.h"
+#include "CondVar.h"
+#include <cassert>
+#include <cstdlib>
 #include <iostream>
-#include <unistd.h>
-#include <stdlib.h>
-#define SECOND 1000000
+
 using namespace std;
 
-void *worker(void *arg) {
-    int my_tid = uthread_self();
-    int points_per_thread = *(int*)arg;
+#define UTHREAD_TIME_QUANTUM 10000
+#define SHARED_BUFFER_SIZE 10
+#define PRINT_FREQUENCY 100000
+#define RANDOM_YIELD_PERCENT 50
 
-    unsigned long local_cnt = 0;
-    unsigned int rand_state = rand();
-    for (int i = 0; i < points_per_thread; i++) {
-        double x = rand_r(&rand_state) / ((double)RAND_MAX + 1) * 2.0 - 1.0;
-        double y = rand_r(&rand_state) / ((double)RAND_MAX + 1) * 2.0 - 1.0;
-        if (x * x + y * y < 1)
-            local_cnt++;
+// Shared buffer
+static int buffer[SHARED_BUFFER_SIZE];
+static int head = 0;
+static int tail = 0;
+static int item_count = 0;
+
+// Shared buffer synchronization
+static Lock buffer_lock;
+static CondVar need_space_cv;
+static CondVar need_item_cv;
+
+// Bookkeeping
+static int produced_count = 0;
+static int consumed_count = 0;
+static bool producer_in_critical_section = false;
+static bool consumer_in_critical_section = false;
+
+// Verify the buffer is in a good state
+void assert_buffer_invariants() {
+  assert(item_count <= SHARED_BUFFER_SIZE);
+  assert(item_count >= 0);
+  assert(head < SHARED_BUFFER_SIZE);
+  assert(head >= 0);
+  assert(tail < SHARED_BUFFER_SIZE);
+  assert(tail >= 0);
+
+  if (head > tail) {
+    assert((head - tail) == item_count);
+  }
+  else if (head < tail) {
+    assert(((SHARED_BUFFER_SIZE - tail) + head) == item_count);
+  }
+  else {
+    assert((item_count == SHARED_BUFFER_SIZE) || (item_count == 0));
+  }
+
+  assert(produced_count >= consumed_count);
+}
+
+void* producer(void *arg) {
+  while (true) {
+    buffer_lock.lock();
+
+    // Wait for room in the buffer if needed
+    // NOTE: Assuming Hoare semantics
+    if (item_count == SHARED_BUFFER_SIZE) {
+      need_space_cv.wait(buffer_lock);
     }
 
-    // NOTE: Parent thread must deallocate
-    unsigned long *return_buffer = new unsigned long;
-    *return_buffer = local_cnt;
-    return return_buffer;
+    // Make sure synchronization is working correctly
+    assert(!producer_in_critical_section);
+    producer_in_critical_section = true;
+    assert_buffer_invariants();
+
+    // Place an item in the buffer
+    buffer[head] = uthread_self();
+    head = (head + 1) % SHARED_BUFFER_SIZE;
+    item_count++;
+    produced_count++;
+
+    // Signal that there is now an item in the buffer
+    need_item_cv.signal();
+
+    producer_in_critical_section = false;
+    buffer_lock.unlock();
+
+    // Randomly give another thread a chance
+    if ((rand() % 100) < RANDOM_YIELD_PERCENT) {
+      uthread_yield();
+    }
+  }
+
+  return nullptr;
+}
+
+void* consumer(void *arg) {
+  while (true) {
+    buffer_lock.lock();
+
+    // Wait for an item in the buffer if needed
+    // NOTE: Assuming Hoare semantics
+    if (item_count == 0) {
+      need_item_cv.wait(buffer_lock);
+    }
+
+    // Make sure synchronization is working correctly
+    assert(!consumer_in_critical_section);
+    consumer_in_critical_section = true;
+    assert_buffer_invariants();
+
+    // Grab an item from the buffer
+    int item = buffer[tail];
+    tail = (tail + 1) % SHARED_BUFFER_SIZE;
+    item_count--;
+    consumed_count++;
+
+    // Print an update periodically
+    if ((consumed_count % PRINT_FREQUENCY) == 0) {
+      cout << "Consumed " << consumed_count << " items" << endl;
+    }
+
+    // Signal that there is now room in the buffer
+    need_space_cv.signal();
+
+    consumer_in_critical_section = false;
+    buffer_lock.unlock();
+
+    // Randomly give another thread a chance
+    if ((rand() % 100) < RANDOM_YIELD_PERCENT) {
+      uthread_yield();
+    }
+  }
+
+  return nullptr;
 }
 
 int main(int argc, char *argv[]) {
-    // Default to 1 ms time quantum
-    int quantum_usecs = 1000;
+  if (argc != 3) {
+    cerr << "Usage: ./uthread-sync-demo <num_producer> <num_consumer>" << endl;
+    cerr << "Example: ./uthread-sync-demo 20 20" << endl;
+    exit(1);
+  }
+  
+  int producer_count = atoi(argv[1]);
+  int consumer_count = atoi(argv[2]);
+  
+  if ((producer_count + consumer_count) > 99) {
+    cerr << "Error: <num_producer> + <num_consumer> must be <= 99" << endl;
+    exit(1);
+  }
+  
+  // Init user thread library
+  int ret = uthread_init(UTHREAD_TIME_QUANTUM);
+  if (ret != 0) {
+    cerr << "Error: uthread_init" << endl;
+    exit(1);
+  }
 
-    // printf("total args: %d\n", argc);
-
-    if (argc < 3) {
-        cerr << "Usage: ./pi <total points> <threads> [quantum_usecs]" << endl;
-        cerr << "Example: ./pi 100000000 8" << endl;
-        exit(1);
-    } else if (argc == 4) {
-        quantum_usecs = atoi(argv[3]);
+  // Create producer threads
+  int *producer_threads = new int[producer_count];
+  for (int i = 0; i < producer_count; i++) {
+    producer_threads[i] = uthread_create(producer, nullptr);
+    if (producer_threads[i] < 0) {
+      cerr << "Error: uthread_create producer" << endl;
     }
-    unsigned long totalpoints = atol(argv[1]);
-    int thread_count = atoi(argv[2]);
+  }
 
-    int *threads = new int[thread_count];
-    int points_per_thread = totalpoints / thread_count;
-
-    // Init user thread library
-    int ret = uthread_init(quantum_usecs);
-    if (ret != 0) {
-        cerr << "uthread_init FAIL!\n" << endl;
-        exit(1);
+  // Create consumer threads
+  int *consumer_threads = new int[consumer_count];
+  for (int i = 0; i < consumer_count; i++) {
+    consumer_threads[i] = uthread_create(consumer, nullptr);
+    if (consumer_threads[i] < 0) {
+      cerr << "Error: uthread_create consumer" << endl;
     }
+  }
+  
+  // NOTE: Producers and consumers run until killed but if we wanted to
+  //       join on them do the following
 
-    srand(time(NULL));
-
-    // Create threads
-    for (int i = 0; i < thread_count; i++) {
-        int tid = uthread_create(worker, &points_per_thread);
-        threads[i] = tid;cout<<threads[i]<<endl;
+  // Wait for all producers to complete
+  for (int i = 0; i < producer_count; i++) {
+    int result = uthread_join(producer_threads[i], nullptr);
+    if (result < 0) {
+      cerr << "Error: uthread_join producer" << endl;
     }
+  }
 
-    // Wait for all threads to complete
-    unsigned long g_cnt = 0;
-    for (int i = 0; i < thread_count; i++) {
-        // Add thread result to global total
-        unsigned long *local_cnt;
-        uthread_join(threads[i], (void**)&local_cnt);
-        g_cnt += *local_cnt;
-
-        // Deallocate thread result
-        delete local_cnt;
+  // Wait for all consumers to complete
+  for (int i = 0; i < consumer_count; i++) {
+    int result = uthread_join(consumer_threads[i], nullptr);
+    if (result < 0) {
+      cerr << "Error: uthread_join consumer" << endl;
     }
+  }
 
-    delete[] threads;
+  delete[] producer_threads;
+  delete[] consumer_threads;
 
-    cout << "Pi: " << (4. * (double)g_cnt) / ((double)points_per_thread * thread_count) << endl;
-
-    int result = uthread_get_total_quantums();
-    cout<< "Total: " << result << endl;
-    return 0;
+  return 0;
 }

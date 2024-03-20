@@ -7,10 +7,11 @@
  */
 
 #define MAX_THREAD_NUM 100 /* maximal number of threads */
-#define STACK_SIZE 4096 /* stack size per thread (in bytes) */
+#define STACK_SIZE (16 * 1024) /* stack size per thread (in bytes) */
 
-//testing function of switching threads, gets called for totalThread-1 amount of time
-void *f(void *arg);
+/* External interface */
+typedef enum Priority { RED, ORANGE, GREEN } Priority;
+
 /* Initialize the thread library */
 // Return 0 on success, -1 on failure
 int uthread_init(int quantum_usecs);
@@ -51,5 +52,16 @@ int uthread_get_total_quantums();
 // Return the thread quantum set count
 int uthread_get_quantums(int tid);
 
-#endif
+/* Increase the thread's priority by one level */
+// Return 0 on success, -1 on failure
+int uthread_increase_priority(int tid);
 
+/* Decrease the thread's priority by one level */
+// Return 0 on success, -1 on failure
+int uthread_decrease_priority(int tid);
+void priority_boost();
+
+// testing
+// int uthread_create_low(void* (*start_routine)(void*), void* arg);
+// int uthread_create_high(void* (*start_routine)(void*), void* arg);
+#endif
