@@ -19,8 +19,12 @@ random flags to determine whether this thread will be boosted to red priority.
 If the thread has no lock, it will be put back to original queue. This function will be called from yield() before switching the 
 threads, as each time yield() is called, there will be a new round of scheduling. 
 
-
 ### Lock vs. Spinlock
+For this section, we found that under the current test settings (long critical sections and high contention), the lock is faster than the spinlock due to the fact that the spinlock will cause the thread to busy wait. The lock will put the thread to sleep and wake it up when the lock is available.
+
+In a uniprocessor user-thread library like uthread, the performance of both types of locks may be similar due to the absence of parallel execution. However, in a multi-core system where threads can execute in parallel on different cores, the performance characteristics may differ:  
+* Spin locks: In a multi-core system, spin locks may suffer from increased contention and cache coherency issues. Multiple spinning threads contending for the same lock can lead to cache thrashing and decreased scalability. 
+* Traditional locks (mutexes): Mutexes, on the other hand, may exhibit better scalability in a multi-core system due to their ability to block and yield the CPU when contended. This allows other threads to make progress, reducing contention and potentially improving overall system throughput.
 
 ### Priority Inversion
 The test case creates 4 threads, one low priority, 2 medium and one high. Assuming the threads is scheduled in sequence. Without priority boosting mechanism, the low priority thread will enter the critical section and grab the lock. As the low priority thread is excuting, the later 3 threads will be added to the ready queue. Since the high priority thread will wait for the lock, 2 medium priority threads will be scheduled and run before high priority thread. 
