@@ -34,7 +34,7 @@ for each thread is almost the same length so that round robin scheduling will no
 The critical sections include the atomic operations for thread control, including join, switch, create, yield, exit, suspend, and resume.
 Those operations involves contxt switch and the thread may lost its state or corrupted if they can be interrupted during those operations.
 
-### Extra Credit
+### Potential Improvements
 One possible solution would be SJF: Shortest Job First. This would prevent other threads waiting for too long, which could achieve the 
 minimum waiting time. One problem of this solution is that the longest thread may have to wait utill all other threads finished. In addition,
 we do not know how to implement an algorithm to calculate the length of a thread excution.
